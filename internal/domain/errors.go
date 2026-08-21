@@ -10,4 +10,5 @@ var (
 	ErrInvalid      = errors.New("invalid request")
 	ErrExpired      = errors.New("session expired")
 	ErrCanceled     = errors.New("operation canceled")
+	ErrInternal     = errors.New("internal failure")
 )

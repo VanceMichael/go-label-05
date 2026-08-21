@@ -81,6 +81,10 @@ func Run[I, O any](ctx context.Context, items []Item[I], options Options, proces
 		go func() {
 			defer workers.Done()
 			for job := range jobs {
+				if workerContext.Err() != nil {
+					results <- canceledResult[O](job.index, job.item.Key, workerContext.Err())
+					continue
+				}
 				result := executor.run(workerContext, job)
 				if !result.result.Succeeded && options.StopOnError {
 					cancel()
@@ -149,6 +153,8 @@ func errorCode(err error) string {
 		return "forbidden"
 	case errors.Is(err, domain.ErrConflict):
 		return "conflict"
+	case errors.Is(err, domain.ErrInternal):
+		return "internal"
 	default:
 		return "internal"
 	}

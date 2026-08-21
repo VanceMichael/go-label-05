@@ -2,7 +2,10 @@ package batch
 
 import (
 	"context"
+	"fmt"
 	"time"
+
+	"go-base/internal/domain"
 )
 
 type indexedItem[T any] struct {
@@ -20,12 +23,21 @@ type itemExecutor[I, O any] struct {
 	timeout   time.Duration
 }
 
-func (executor itemExecutor[I, O]) run(ctx context.Context, job indexedItem[I]) indexedResult[O] {
+func (executor itemExecutor[I, O]) run(ctx context.Context, job indexedItem[I]) (out indexedResult[O]) {
 	started := time.Now().UTC()
 	result := Result[O]{
 		Key:       job.item.Key,
 		StartedAt: started,
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			result.Succeeded = false
+			result.Code = errorCode(domain.ErrInternal)
+			result.Message = fmt.Sprintf("batch processor panic: %v", r)
+			result.EndedAt = time.Now().UTC()
+		}
+		out = indexedResult[O]{index: job.index, result: result}
+	}()
 
 	itemContext, cancel := executor.itemContext(ctx)
 	defer cancel()
@@ -40,7 +52,6 @@ func (executor itemExecutor[I, O]) run(ctx context.Context, job indexedItem[I]) 
 		result.Code = errorCode(err)
 		result.Message = err.Error()
 	}
-
 	return indexedResult[O]{index: job.index, result: result}
 }
 
