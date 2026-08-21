@@ -70,48 +70,22 @@ func Run[I, O any](ctx context.Context, items []Item[I], options Options, proces
 		report.EndedAt = report.StartedAt
 		return report, nil
 	}
-	type indexed struct {
-		index int
-		item  Item[I]
-	}
-	jobs := make(chan indexed)
-	results := make(chan struct {
-		index  int
-		result Result[O]
-	}, len(items))
+	jobs := make(chan indexedItem[I])
+	results := make(chan indexedResult[O], len(items))
 	workerContext, cancel := context.WithCancel(ctx)
 	defer cancel()
+	executor := itemExecutor[I, O]{processor: processor, timeout: options.PerItemTimeout}
 	var workers sync.WaitGroup
 	for worker := 0; worker < options.Workers; worker++ {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
 			for job := range jobs {
-				started := time.Now().UTC()
-				result := Result[O]{Key: job.item.Key, StartedAt: started}
-				itemContext := workerContext
-				itemCancel := func() {}
-				if options.PerItemTimeout > 0 {
-					itemContext, itemCancel = context.WithTimeout(workerContext, options.PerItemTimeout)
+				result := executor.run(workerContext, job)
+				if !result.result.Succeeded && options.StopOnError {
+					cancel()
 				}
-				value, err := processor(itemContext, job.item.Value)
-				itemCancel()
-				result.Value = value
-				result.EndedAt = time.Now().UTC()
-				if err == nil {
-					result.Succeeded = true
-					result.Code = "ok"
-				} else {
-					result.Code = errorCode(err)
-					result.Message = err.Error()
-					if options.StopOnError {
-						cancel()
-					}
-				}
-				results <- struct {
-					index  int
-					result Result[O]
-				}{index: job.index, result: result}
+				results <- result
 			}
 		}()
 	}
@@ -121,13 +95,10 @@ func Run[I, O any](ctx context.Context, items []Item[I], options Options, proces
 			select {
 			case <-workerContext.Done():
 				for rest := index; rest < len(items); rest++ {
-					results <- struct {
-						index  int
-						result Result[O]
-					}{index: rest, result: Result[O]{Key: items[rest].Key, Code: "canceled", Message: workerContext.Err().Error(), StartedAt: time.Now().UTC(), EndedAt: time.Now().UTC()}}
+					results <- canceledResult[O](rest, items[rest].Key, workerContext.Err())
 				}
 				return
-			case jobs <- indexed{index: index, item: item}:
+			case jobs <- indexedItem[I]{index: index, item: item}:
 			}
 		}
 	}()
@@ -135,10 +106,7 @@ func Run[I, O any](ctx context.Context, items []Item[I], options Options, proces
 		workers.Wait()
 		close(results)
 	}()
-	indexedResults := make([]struct {
-		index  int
-		result Result[O]
-	}, 0, len(items))
+	indexedResults := make([]indexedResult[O], 0, len(items))
 	for result := range results {
 		indexedResults = append(indexedResults, result)
 		if result.result.Succeeded {
